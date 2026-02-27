@@ -28,12 +28,21 @@
 #import "RemoteHostsController.h"
 #import "NotificationHelper.h"
 
+@interface ApplicationController ()
+{
+	__weak NSWindow *_editorWindow;
+	NSArray *_editorNibTopLevelObjects; // retains top-level NIB objects (e.g. EditorController)
+}
+@end
+
 @interface ApplicationController(Private)
 - (void)initStructure;
 - (void)initEditorWindow;
 - (void)notifyHostsChange:(Hosts*)hosts;
 - (void)showApplicationInDock;
 - (void)hideApplicationFromDock;
+- (void)orderEditorWindowFront;
+- (void)editorWindowWillClose:(NSNotification *)notification;
 - (void)createHostsFileFromLocalURL:(NSURL*)url;
 @end
 
@@ -103,10 +112,19 @@ static ApplicationController *sharedInstance = nil;
 - (IBAction)openEditorWindow:(id)sender
 {
 	if (!editorWindowOpened) {
-		[self initEditorWindow];
+		if (_editorNibTopLevelObjects) {
+			editorWindowOpened = YES;
+			[[NSNotificationCenter defaultCenter] addObserver:self
+													 selector:@selector(editorWindowWillClose:)
+														 name:NSWindowWillCloseNotification
+													   object:_editorWindow];
+		} else {
+			[self initEditorWindow];
+		}
 	}
-	
+
 	[self showApplicationInDock];
+	[self performSelector:@selector(orderEditorWindowFront) withObject:nil afterDelay:0.1];
 }
 
 - (IBAction)closeEditorWindow:(id)sender
@@ -234,7 +252,7 @@ static ApplicationController *sharedInstance = nil;
 -(void)createNewHostsFile:(NSPasteboard *)pboard userData:(NSString *)userData error:(NSString **)error
 {
 	logDebug(@"Creating new hosts file from dropped data");
-    NSString * data = [pboard stringForType:NSStringPboardType];
+    NSString * data = [pboard stringForType:NSPasteboardTypeString];
     
 	NSURL *url = [NSURL URLWithString:data];
 	if (url == nil) {
@@ -261,9 +279,21 @@ static ApplicationController *sharedInstance = nil;
 
 - (void)initEditorWindow
 {
-    logDebug(@"Initializing editor window");
-	[NSBundle loadNibNamed:@"Editor" owner:self];
+	logDebug(@"Initializing editor window");
+	NSArray *topLevelObjects = nil;
+	[[NSBundle mainBundle] loadNibNamed:@"Editor" owner:self topLevelObjects:&topLevelObjects];
+	_editorNibTopLevelObjects = topLevelObjects;
 	editorWindowOpened = YES;
+	for (id obj in topLevelObjects) {
+		if ([obj isKindOfClass:[NSWindow class]]) {
+			_editorWindow = obj;
+			[[NSNotificationCenter defaultCenter] addObserver:self
+													 selector:@selector(editorWindowWillClose:)
+														 name:NSWindowWillCloseNotification
+													   object:obj];
+			break;
+		}
+	}
 }
 
 - (void)activatePreviousFile:(NSNotification *)note
@@ -289,44 +319,43 @@ static ApplicationController *sharedInstance = nil;
     [NotificationHelper notify:@"Hosts File Activated" message:[hosts name]];
 }
 
-BOOL tranformAppToState(ProcessApplicationTransformState newState)
-{
-	ProcessSerialNumber psn = { 0, kCurrentProcess };
-	OSStatus transformStatus = TransformProcessType(&psn, newState);
-	if((transformStatus != 0))
-	{
-		NSError *error = [NSError errorWithDomain:NSOSStatusErrorDomain code:transformStatus userInfo:nil];
-		NSLog(@"TranformAppToState: Unable to transform App state. Error - %@",error);
-	}
-
-	return (transformStatus == 0);
-}
-
 - (void)showApplicationInDock
 {
-	BOOL bSuccess = tranformAppToState(kProcessTransformToForegroundApplication);
-	if(bSuccess)
-	{
+	[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+	if (@available(macOS 14.0, *)) {
+		[NSApp activate];
+	} else {
 		[NSApp activateIgnoringOtherApps:YES];
-		ProcessSerialNumber psnx = {0, kNoProcess};
-		GetNextProcess(&psnx);
-		SetFrontProcess(&psnx);
-		[self performSelector:@selector(setFront) withObject:nil afterDelay:0.5];
 	}
-
 }
 
 - (void)hideApplicationFromDock
 {
-	tranformAppToState(kProcessTransformToBackgroundApplication);
+	[NSObject cancelPreviousPerformRequestsWithTarget:self
+											 selector:@selector(orderEditorWindowFront)
+											   object:nil];
+	[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 	[Preferences setShowEditorWindow:NO];
+	[[NSNotificationCenter defaultCenter] removeObserver:self
+													name:NSWindowWillCloseNotification
+												  object:_editorWindow];
+	[_editorWindow orderOut:nil];
 	editorWindowOpened = NO;
 }
 
-- (void)setFront
+- (void)orderEditorWindowFront
 {
-	ProcessSerialNumber psn = {0, kCurrentProcess};
-	SetFrontProcess(&psn);	
+	[_editorWindow makeKeyAndOrderFront:nil];
+}
+
+- (void)editorWindowWillClose:(NSNotification *)notification
+{
+	if (editorWindowOpened) {
+		[[NSNotificationCenter defaultCenter] removeObserver:self
+														name:NSWindowWillCloseNotification
+													  object:[notification object]];
+		[self hideApplicationFromDock];
+	}
 }
 
 - (void)createHostsFileFromLocalURL:(NSURL*)url

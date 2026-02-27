@@ -70,12 +70,15 @@ static HostsMainController *sharedInstance = nil;
 - (id)initWithCoder:(NSCoder *)decoder
 {
     self = [super initWithCoder:decoder];
+    if (!self || sharedInstance) {
+        return self;
+    }
     controllers = [NSArray arrayWithObjects:
                    [LocalHostsController new],
                    [RemoteHostsController new],
                    [CombinedHostsController new],
                    nil];
-    
+
     for (int i=0; i<[controllers count]; i++) {
         [[controllers objectAtIndex:i] setDelegate:self];
     }
@@ -87,8 +90,16 @@ static HostsMainController *sharedInstance = nil;
     filesCount = 0;
 
     sharedInstance = self;
-	
-    return sharedInstance;	
+
+    return self;
+}
+
+- (id)awakeAfterUsingCoder:(NSCoder *)decoder
+{
+    if (sharedInstance && sharedInstance != self) {
+        return sharedInstance;
+    }
+    return [super awakeAfterUsingCoder:decoder];
 }
 
 - (void)load
@@ -109,6 +120,7 @@ static HostsMainController *sharedInstance = nil;
 	[self updateFilesCount];
 	logInfo(@"All hosts files are loaded");
     [[NSNotificationCenter defaultCenter] postNotificationName:ActivateFileNotification object:NULL];
+    [[NSNotificationCenter defaultCenter] postNotificationName:AllHostsFilesLoadedFromDiskNotification object:nil];
 }
 
 #pragma mark -
@@ -261,7 +273,7 @@ static HostsMainController *sharedInstance = nil;
     [alert addButtonWithTitle:@"Cancel"];
     [alert setMessageText:@"Remove file?"];
     [alert setInformativeText:@"Are you sure you want to remove the file?\nYou can not undo it."];
-    [alert setAlertStyle:NSWarningAlertStyle];
+    [alert setAlertStyle:NSAlertStyleWarning];
     
     if ([alert runModal] == NSAlertFirstButtonReturn) {
         [self removeHostsFile:[self selectedHosts] moveToTrash:NO];

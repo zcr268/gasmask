@@ -14,3 +14,4 @@
 #import "ListController.h"
 #import "Preferences+Remote.h"
 #import "LoginItem.h"
+#import "ApplicationController.h"

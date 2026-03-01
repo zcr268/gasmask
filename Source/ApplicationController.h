@@ -20,9 +20,9 @@
 
 #import "HostsMainController.h"
 
-@class AboutBoxController;
 @class SPUStandardUpdaterController;
 @class SPUUpdater;
+
 
 @interface ApplicationController : NSObject {
 	@private
@@ -32,7 +32,6 @@
 	int busyThreads;
 	BOOL shouldQuit;
 	BOOL editorWindowOpened;
-    AboutBoxController *aboutBoxController;
 	SPUStandardUpdaterController *_updaterController;
 }
 

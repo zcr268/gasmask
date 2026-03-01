@@ -12,6 +12,7 @@
 #import "LocalHostsController.h"
 #import "CombinedHostsController.h"
 #import "ListController.h"
+#import "HostsTextView.h"
 #import "Preferences+Remote.h"
 #import "LoginItem.h"
 #import "ApplicationController.h"

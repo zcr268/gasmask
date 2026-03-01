@@ -60,9 +60,6 @@ struct SidebarView: View {
             renameField(for: hosts)
         } else {
             HostsRowView(hosts: hosts, isGroup: false, refreshToken: store.rowRefreshToken)
-                .draggable(hosts.contents() ?? "") {
-                    Text(hosts.name() ?? "")
-                }
                 .contextMenu { contextMenuItems(for: hosts) }
         }
     }

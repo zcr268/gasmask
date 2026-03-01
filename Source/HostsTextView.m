@@ -22,8 +22,12 @@
 #import "ExtendedNSString.h"
 #import "IP.h"
 
+#define kAsyncHighlightThreshold 50000
+#define kHighlightChunkSize 100000
+
 @interface HostsTextView (HighLight)
--(void)colorText: (NSTextStorage*)textStorage;
+-(void)colorTextInRange:(NSRange)range;
+-(void)highlightAsyncFrom:(NSUInteger)start generation:(NSUInteger)generation;
 -(void)removeColors;
 -(void)removeMarks: (NSTextStorage*)textStorage range: (NSRange)range;
 -(void)markComment: (NSTextStorage*)textStorage range:(NSRange)range;
@@ -118,9 +122,19 @@
 {
 	syntaxHighlighting = value;
 	if (syntaxHighlighting) {
-		[self colorText:[self textStorage]];
+		NSUInteger length = [[[self textStorage] string] length];
+		if (length > kAsyncHighlightThreshold) {
+			_highlightGeneration++;
+			[self highlightAsyncFrom:0 generation:_highlightGeneration];
+		} else if (length > 0) {
+			NSTextStorage *ts = [self textStorage];
+			[ts beginEditing];
+			[self colorTextInRange:NSMakeRange(0, length)];
+			[ts endEditing];
+		}
 	}
 	else {
+		_highlightGeneration++;
 		[self removeColors];
 	}
 }
@@ -129,45 +143,74 @@
 	return syntaxHighlighting;
 }
 
+-(void)cancelPendingHighlighting
+{
+	_highlightGeneration++;
+}
+
+-(void)replaceContentWith:(NSString *)newContent
+{
+	// Cancel any pending async highlighting from a previous call
+	_highlightGeneration++;
+	_replacingContent = YES;
+	[self setString:newContent];
+	_replacingContent = NO;
+
+	if (syntaxHighlighting) {
+		NSUInteger length = [[self string] length];
+		if (length > kAsyncHighlightThreshold) {
+			_highlightGeneration++;
+			NSUInteger generation = _highlightGeneration;
+			dispatch_async(dispatch_get_main_queue(), ^{
+				[self highlightAsyncFrom:0 generation:generation];
+			});
+		} else if (length > 0) {
+			NSTextStorage *ts = [self textStorage];
+			[ts beginEditing];
+			[self colorTextInRange:NSMakeRange(0, length)];
+			[ts endEditing];
+		}
+	}
+}
+
 @end
 
 @implementation HostsTextView (HighLight)
 
--(void)colorText: (NSTextStorage*)textStorage
+-(void)colorTextInRange:(NSRange)range
 {
-	
-	NSRange range = [self changedLinesRange: textStorage];
+	NSTextStorage *textStorage = [self textStorage];
 	NSString *contents = [[textStorage string] substringWithRange:range];
-	
+
 	if ([contents length] == 0) {
 		return;
 	}
-	
+
 	[self removeMarks: textStorage range: range];
-	
-	NSArray *array = [contents componentsSeparatedByString: @"\n"]; // 37ms
-	
+
+	NSArray *array = [contents componentsSeparatedByString: @"\n"];
+
 	int pos = 0;
 	IP *ip = [[IP alloc] initWithString:contents];
-	
+
 	for (NSString *line in array) {
 		NSRange ipRange = NSMakeRange(NSNotFound, NSNotFound);
 		NSRange namesRange = NSMakeRange(NSNotFound, NSNotFound);
-		
+
 		int i;
 		for (i=0; i<[line length]; i++) {
 			unichar character = [line characterAtIndex:i];
 			// Start of comment
 			if (character == '#') {
-				
+
 				// End of names
 				if (namesRange.location != NSNotFound) {
 					namesRange.length = pos-namesRange.location;
 				}
-				
+
 				NSRange range2 = NSMakeRange(range.location+pos, [line length]-i);
 				[self markComment:textStorage range:range2];
-				
+
 				pos += [line length]-i;
 				break;
 			}
@@ -185,16 +228,16 @@
 			}
 			pos++;
 		}
-		
+
 		if (ipRange.location != NSNotFound && ipRange.length == NSNotFound) {
 			ipRange.length = pos-ipRange.location;
 		}
-		
+
 		if (ipRange.location != NSNotFound && ipRange.length != NSNotFound) {
 			[ip setRange:ipRange];
-			
+
 			ipRange.location += range.location;
-			
+
 			if ([ip isValid]) {
 				if ([ip isVersion4]) {
 					[self markIPv4:textStorage range:ipRange];
@@ -206,27 +249,27 @@
 			else {
 				NSRange badIPRange = [ip invalidRange];
 				badIPRange.location += ipRange.location;
-				
+
 				[self markInvalid: textStorage range:badIPRange];
 			}
 		}
-		
+
 		if (namesRange.length == NSNotFound) {
 			namesRange.length = pos-namesRange.location;
-			
+
 			if ([line hasSuffix:@"\r"]) {
 				namesRange.length--;
 			}
 		}
 		// Color names
 		if (namesRange.location != NSNotFound) {
-			
+
 			NSRange nameRange = NSMakeRange(namesRange.location, NSNotFound);
-			
+
 			int end = NSMaxRange(namesRange);
 			for (int i=namesRange.location; i<end; i++) {
 				unichar character = [contents characterAtIndex:i];
-				
+
 				if (nameRange.length == NSNotFound) {
 					if (character == ' ' || character == '\t') {
 						nameRange.length = i-nameRange.location;
@@ -235,7 +278,7 @@
 					else if (i == end-1) {
 						nameRange.length = i-nameRange.location+1;
 					}
-					
+
 					if (nameRange.length != NSNotFound && nameRange.length > 0) {
 						if (![self validName:contents range:nameRange]) {
 							[self markInvalid:textStorage range:NSMakeRange(range.location+nameRange.location, nameRange.length)];
@@ -248,9 +291,42 @@
 				}
 			}
 		}
-		
+
 		// Move over newline
 		pos++;
+	}
+}
+
+-(void)highlightAsyncFrom:(NSUInteger)start generation:(NSUInteger)generation
+{
+	if (generation != _highlightGeneration) return;
+	if (!syntaxHighlighting) return;
+
+	NSTextStorage *textStorage = [self textStorage];
+	NSString *string = [textStorage string];
+	NSUInteger totalLength = [string length];
+
+	if (start >= totalLength) return;
+
+	NSUInteger end = MIN(start + kHighlightChunkSize, totalLength);
+
+	// Extend to line boundary
+	if (end < totalLength) {
+		NSRange lineRange = [string lineRangeForRange:NSMakeRange(end, 0)];
+		end = NSMaxRange(lineRange);
+	}
+
+	NSRange range = NSMakeRange(start, end - start);
+
+	[textStorage beginEditing];
+	[self colorTextInRange:range];
+	[textStorage endEditing];
+
+	if (end < totalLength && generation == _highlightGeneration) {
+		NSUInteger nextStart = end;
+		dispatch_async(dispatch_get_main_queue(), ^{
+			[self highlightAsyncFrom:nextStart generation:generation];
+		});
 	}
 }
 
@@ -340,9 +416,26 @@
 
 - (void)textStorageDidProcessEditing:(NSNotification *)notification
 {
-	if (syntaxHighlighting && [[self textStorage] editedMask] != NSTextStorageEditedAttributes) {
-		[self colorText:[notification object]];
+	if (_replacingContent) return;
+	if (!syntaxHighlighting) return;
+	if ([[self textStorage] editedMask] == NSTextStorageEditedAttributes) return;
+
+	// Cancel any pending async highlighting (text has changed)
+	_highlightGeneration++;
+
+	NSTextStorage *textStorage = [notification object];
+	NSRange range = [self changedLinesRange:textStorage];
+
+	// For large edits (bulk string replacement), use async chunked highlighting
+	if (range.length > kAsyncHighlightThreshold) {
+		NSUInteger generation = _highlightGeneration;
+		dispatch_async(dispatch_get_main_queue(), ^{
+			[self highlightAsyncFrom:0 generation:generation];
+		});
+		return;
 	}
+
+	[self colorTextInRange:range];
 }
 
 @end

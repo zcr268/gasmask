@@ -23,13 +23,18 @@
 
 @implementation Util
 
-+ (BOOL) flushDirectoryServiceCache
++ (void) flushDirectoryServiceCache
 {
 	logDebug(@"Flushing Directory Service Cache");
-	NSArray *arguments = [NSArray arrayWithObject:@"-flushcache"];
-	NSTask * task = [NSTask launchedTaskWithLaunchPath:@"/usr/bin/dscacheutil" arguments:arguments];
-	[task waitUntilExit];
-	return [task terminationStatus] == 0;
+	NSTask *task = [[NSTask alloc] init];
+	task.launchPath = @"/usr/bin/dscacheutil";
+	task.arguments = @[@"-flushcache"];
+	task.terminationHandler = ^(NSTask *t) {
+		if (t.terminationStatus != 0) {
+			logDebug(@"dscacheutil failed with status %d", t.terminationStatus);
+		}
+	};
+	[task launch];
 }
 
 + (BOOL) isPre10_10
